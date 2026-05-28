@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gaze Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            cursor: none;
+        }
+
+        #calibration-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.5s;
+        }
+
+        #calibration-screen.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #calibration-progress {
+            position: absolute;
+            top: 20px;
+            color: #0ff;
+            font-size: 18px;
+            letter-spacing: 2px;
+        }
+
+        #calibration-instruction {
+            position: absolute;
+            top: 60px;
+            color: #0ff;
+            font-size: 14px;
+            letter-spacing: 1px;
+        }
+
+        .calibration-dot {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            border: 3px solid #0ff;
+            border-radius: 50%;
+            background: rgba(0, 255, 255, 0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.3;
+        }
+
+        .calibration-dot.active {
+            opacity: 1;
+            transform: scale(1.5);
+            background: rgba(0, 255, 255, 0.6);
+            animation: pulse 0.5s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from {
+                box-shadow: 0 0 10px #0ff;
+            }
+            to {
+                box-shadow: 0 0 30px #0ff;
+            }
+        }
+
+        .calibration-dot.calibrated {
+            background: #0f0;
+            border-color: #0f0;
+            opacity: 0.5;
+        }
+
+        .calibration-dot.calibrated::after {
+            content: '✓';
+            color: #000;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .progress-ring {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            transform: translate(-50%, -50%) rotate(-90deg);
+        }
+
+        .progress-ring-circle {
+            stroke: #0ff;
+            stroke-width: 3;
+            fill: none;
+            stroke-dasharray: 113;
+            stroke-dashoffset: 113;
+            transition: stroke-dashoffset 0.1s linear;
+        }
+
+        #crosshair-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s;
+        }
+
+        #crosshair-container.visible {
+            opacity: 1;
+        }
+
+        #horizontal-line {
+            position: absolute;
+            left: 0;
+            width: 100vw;
+            height: 1px;
+            background: rgba(255, 0, 0, 0.7);
+            pointer-events: none;
+        }
+
+        #vertical-line {
+            position: absolute;
+            top: 0;
+            width: 1px;
+            height: 100vh;
+            background: rgba(255, 0, 0, 0.7);
+            pointer-events: none;
+        }
+
+        #intersection-circle {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: rgba(255, 0, 0, 0.9);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        #coordinates {
+            position: absolute;
+            color: #f00;
+            font-size: 12px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 4px 8px;
+            border-radius: 4px;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        #recalibrate-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: rgba(0, 255, 255, 0.2);
+            border: 1px solid #0ff;
+            color: #0ff;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            cursor: pointer;
+            z-index: 2000;
+            transition: all 0.3s;
+        }
+
+        #recalibrate-btn:hover {
+            background: rgba(0, 255, 255, 0.4);
+            transform: scale(1.05);
+        }
+
+        #webcam-preview {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 50px;
+            height: 40px;
+            border: 1px solid #0ff;
+            z-index: 1500;
+            opacity: 0.7;
+        }
+
+        #status-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #0ff;
+            font-size: 16px;
+            text-align: center;
+            z-index: 999;
+        }
+
+        /* Hide WebGazer's default elements */
+        #webgazerVideoFeed {
+            display: none !important;
+        }
+
+        #webgazerFaceOverlay {
+            display: none !important;
+        }
+
+        #webgazerFaceFeedbackBox {
+            display: none !important;
+        }
+
+        .webgazer_dot {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="status-message">Initializing camera...</div>
+
+    <div id="calibration-screen">
+        <div id="calibration-progress">0/25 calibrated</div>
+        <div id="calibration-instruction">Look at the highlighted dot for 2 seconds</div>
+        <!-- 5x5 grid for better accuracy -->
+        <!-- Row 1 -->
+        <div class="calibration-dot" data-index="0" style="top: 10%; left: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="1" style="top: 10%; left: 30%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="2" style="top: 10%; left: 50%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="3" style="top: 10%; left: 70%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="4" style="top: 10%; right: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+
+        <!-- Row 2 -->
+        <div class="calibration-dot" data-index="5" style="top: 30%; left: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="6" style="top: 30%; left: 30%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="7" style="top: 30%; left: 50%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="8" style="top: 30%; left: 70%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="9" style="top: 30%; right: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+
+        <!-- Row 3 -->
+        <div class="calibration-dot" data-index="10" style="top: 50%; left: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="11" style="top: 50%; left: 30%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="12" style="top: 50%; left: 50%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="13" style="top: 50%; left: 70%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="14" style="top: 50%; right: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+
+        <!-- Row 4 -->
+        <div class="calibration-dot" data-index="15" style="top: 70%; left: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="16" style="top: 70%; left: 30%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="17" style="top: 70%; left: 50%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="18" style="top: 70%; left: 70%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="19" style="top: 70%; right: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+
+        <!-- Row 5 -->
+        <div class="calibration-dot" data-index="20" style="bottom: 10%; left: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="21" style="bottom: 10%; left: 30%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="22" style="bottom: 10%; left: 50%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="23" style="bottom: 10%; left: 70%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+        <div class="calibration-dot" data-index="24" style="bottom: 10%; right: 10%;"><svg class="progress-ring" style="position: absolute; left: 50%; top: 50%;"><circle class="progress-ring-circle" cx="20" cy="20" r="18"></circle></svg></div>
+    </div>
+
+    <div id="crosshair-container">
+        <div id="horizontal-line"></div>
+        <div id="vertical-line"></div>
+        <div id="intersection-circle"></div>
+        <div id="coordinates">X: 0, Y: 0</div>
+    </div>
+
+    <button id="recalibrate-btn">Recalibrate</button>
+    <video id="webcam-preview" autoplay playsinline muted></video>
+
+    <script src="https://cdn.jsdelivr.net/npm/webgazer@2.1.0/dist/webgazer.min.js"></script>
+    <script>
+        let smoothX = window.innerWidth / 2;
+        let smoothY = window.innerHeight / 2;
+        let calibratedCount = 0;
+        let isCalibrating = true;
+        let isTracking = false;
+
+        const calibrationScreen = document.getElementById('calibration-screen');
+        const calibrationProgress = document.getElementById('calibration-progress');
+        const crosshairContainer = document.getElementById('crosshair-container');
+        const horizontalLine = document.getElementById('horizontal-line');
+        const verticalLine = document.getElementById('vertical-line');
+        const intersectionCircle = document.getElementById('intersection-circle');
+        const coordinates = document.getElementById('coordinates');
+        const recalibrateBtn = document.getElementById('recalibrate-btn');
+        const webcamPreview = document.getElementById('webcam-preview');
+        const statusMessage = document.getElementById('status-message');
+        const calibrationDots = document.querySelectorAll('.calibration-dot');
+
+        // Initialize WebGazer
+        async function initWebGazer() {
+            try {
+                // Start WebGazer
+                webgazer.setRegression('ridge')
+                    .setTracker('TFFacemesh')
+                    .showPredictionPoints(false)
+                    .saveDataAcrossSessions(false)
+                    .begin();
+
+                // Set up gaze listener
+                webgazer.setGazeListener((data, timestamp) => {
+                    if (data && isTracking) {
+                        // Apply exponential smoothing
+                        smoothX = 0.2 * data.x + 0.8 * smoothX;
+                        smoothY = 0.2 * data.y + 0.8 * smoothY;
+                        updateCrosshair(smoothX, smoothY);
+                    }
+                });
+
+                // Wait for WebGazer to be ready
+                await webgazer.ready();
+
+                // Get webcam stream for preview
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                webcamPreview.srcObject = stream;
+
+                statusMessage.style.display = 'none';
+
+                // Start auto-calibration sequence
+                beginCalibrationSequence();
+            } catch (error) {
+                statusMessage.textContent = 'Camera access denied. Please allow camera access.';
+                console.error('WebGazer initialization error:', error);
+            }
+        }
+
+        function updateCrosshair(x, y) {
+            horizontalLine.style.top = `${y}px`;
+            verticalLine.style.left = `${x}px`;
+            intersectionCircle.style.left = `${x}px`;
+            intersectionCircle.style.top = `${y}px`;
+
+            // Position coordinates near the circle, offset to avoid overlap
+            const offsetX = x + 20;
+            const offsetY = y - 20;
+            coordinates.style.left = `${offsetX}px`;
+            coordinates.style.top = `${offsetY}px`;
+            coordinates.textContent = `X: ${Math.round(x)}, Y: ${Math.round(y)}`;
+        }
+
+        // Auto-calibration system
+        let currentCalibrationIndex = 0;
+        let calibrationStartTime = null;
+        const CALIBRATION_DURATION = 2000; // 2 seconds
+
+        function startAutoCalibration() {
+            if (currentCalibrationIndex >= calibrationDots.length) {
+                finishCalibration();
+                return;
+            }
+
+            const currentDot = calibrationDots[currentCalibrationIndex];
+            currentDot.classList.add('active');
+
+            const rect = currentDot.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            calibrationStartTime = Date.now();
+            const progressCircle = currentDot.querySelector('.progress-ring-circle');
+
+            const calibrationInterval = setInterval(() => {
+                const elapsed = Date.now() - calibrationStartTime;
+                const progress = Math.min(elapsed / CALIBRATION_DURATION, 1);
+
+                // Update progress ring
+                const offset = 113 - (113 * progress);
+                progressCircle.style.strokeDashoffset = offset;
+
+                // Record calibration points continuously
+                webgazer.recordScreenPosition(centerX, centerY);
+
+                if (progress >= 1) {
+                    clearInterval(calibrationInterval);
+                    currentDot.classList.remove('active');
+                    currentDot.classList.add('calibrated');
+                    progressCircle.style.strokeDashoffset = 113;
+
+                    calibratedCount++;
+                    calibrationProgress.textContent = `${calibratedCount}/25 calibrated`;
+
+                    currentCalibrationIndex++;
+
+                    // Small delay before next dot
+                    setTimeout(() => {
+                        startAutoCalibration();
+                    }, 500);
+                }
+            }, 50);
+        }
+
+        // Start auto-calibration after WebGazer is ready
+        function beginCalibrationSequence() {
+            setTimeout(() => {
+                startAutoCalibration();
+            }, 1000);
+        }
+
+        function finishCalibration() {
+            isCalibrating = false;
+            isTracking = true;
+            calibrationScreen.classList.add('hidden');
+            crosshairContainer.classList.add('visible');
+        }
+
+        function startRecalibration() {
+            isTracking = false;
+            isCalibrating = true;
+            calibratedCount = 0;
+            currentCalibrationIndex = 0;
+            calibrationProgress.textContent = '0/25 calibrated';
+
+            calibrationDots.forEach(dot => {
+                dot.classList.remove('calibrated');
+                dot.classList.remove('active');
+                const progressCircle = dot.querySelector('.progress-ring-circle');
+                progressCircle.style.strokeDashoffset = 113;
+            });
+
+            calibrationScreen.classList.remove('hidden');
+            crosshairContainer.classList.remove('visible');
+
+            // Restart calibration sequence
+            setTimeout(() => {
+                startAutoCalibration();
+            }, 500);
+        }
+
+        // Recalibrate button
+        recalibrateBtn.addEventListener('click', startRecalibration);
+
+        // Optional: Continuous calibration on click after initial calibration
+        document.addEventListener('click', (e) => {
+            if (!isCalibrating && isTracking && e.target !== recalibrateBtn) {
+                webgazer.recordScreenPosition(e.clientX, e.clientY);
+            }
+        });
+
+        // ESC key to stop tracking
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                isTracking = false;
+                webgazer.pause();
+                statusMessage.style.display = 'block';
+                statusMessage.textContent = 'Tracking stopped. Refresh to restart.';
+                crosshairContainer.classList.remove('visible');
+            }
+        });
+
+        // Start initialization
+        initWebGazer();
+    </script>
+</body>
+</html>
